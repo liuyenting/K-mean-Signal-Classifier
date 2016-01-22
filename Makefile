@@ -1,5 +1,5 @@
 CXX 		= g++
-CXXFLAGS 	= -Wall -std=c++11 -g
+CXXFLAGS 	= -Wall -std=c++11 -O2
 
 CXXFLAGS 	+= `pkg-config --cflags opencv`
 LDFLAGS 	= -L/opt/local/lib

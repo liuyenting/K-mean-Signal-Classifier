@@ -205,6 +205,7 @@ static void IdentifyPosition(const cv::Mat &quantized_signal, const int threshol
 // Step 4
 static void ExtractSignal(const cv::Mat &quantized_signal, const std::vector<int> pos,
                           std::vector<int> &labeled_signal) {
+
 }
 
 int main(int argc, char **argv) {
