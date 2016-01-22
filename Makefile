@@ -1,11 +1,11 @@
 CXX 		= g++
-CXXFLAGS 	= -Wall -std=c++11
+CXXFLAGS 	= -Wall -std=c++11 -g
 
 CXXFLAGS 	+= `pkg-config --cflags opencv`
 LDFLAGS 	= -L/opt/local/lib
 LDFLAGS		+= -lopencv_highgui -lopencv_imgproc -lopencv_core -lopencv_imgcodecs
 
-TARGET = houghcirc
+TARGET = auto_classifier
 SOURCE = $(TARGET).cpp
 
 TARGET:
