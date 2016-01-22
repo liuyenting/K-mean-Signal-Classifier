@@ -1,4 +1,5 @@
 #include <iostream>
+#include <vector>
 #include <opencv2/core/mat.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -22,6 +23,8 @@ const cv::Scalar color_table[] =
 	cv::Scalar(0,255,255)
 };
 
+const int valid_signal_threshold = 10;
+
 static cv::Point GetCenter(const std::vector<cv::Vec3f> &source, int index) {
 	return cv::Point(std::round(source[index][0]), std::round(source[index][1]));
 }
@@ -37,7 +40,7 @@ static void Crop2Source(const cv::Mat &original_img,
 	cv::Mat gray_img;
 	cv::cvtColor(original_img, gray_img, CV_BGR2GRAY);
 
-	// Use gaussian blurr to reduce the background noise.
+	// Use gaussian blur to reduce the background noise.
 	cv::GaussianBlur(gray_img,              // Gray-scale source image.
 	                 gray_img,              // Directly blur the gray-scale image.
 	                 cv::Size(27, 27),      // Gaussian kernel size, try-n-error.
@@ -121,6 +124,21 @@ static void Quantized2Level(const cv::Mat &cropped_img, const int n_levels,
 	cropped_img.convertTo(lab_img, CV_32FC3);
 	// cv::cvtColor(lab_img, lab_img, CV_BGR2Lab);
 
+	/*
+	   // Perform in-place unsharp masking.
+	   cv::Mat blured_lab_img;
+	   cv::GaussianBlur(lab_img,               // Gray-scale source image.
+	                 blured_lab_img,        // Directly blur the gray-scale image.
+	                 cv::Size(27, 27),      // Gaussian kernel size, try-n-error.
+	                 5, 5);                 // Kernel S.D. in X and Y direction.
+	   cv::addWeighted(lab_img,        // First input array.
+	                2,            // Weight of the first array.
+	                blured_lab_img, // Second input array.
+	                -0.5,           // Weight of the second array.
+	                0,              // Gamma, scalar added to each sum.
+	                lab_img);
+	 */
+
 	// Reshpae the array for further K-mean processing.
 	// (M, N, n-channels) -> (MxN, n-channels)
 	cv::Size img_size = cropped_img.size();
@@ -129,6 +147,14 @@ static void Quantized2Level(const cv::Mat &cropped_img, const int n_levels,
 
 	// Apply K-mean.
 	cv::Mat_<int> indices(lab_img.size(), CV_32SC1);
+	#ifndef DEBUG
+	cv::kmeans(lab_img,  // Sample array, 1 row per sample.
+	           n_levels, // Number of clusters to split the set by.
+	           indices,  // Integer artray that stores the cluster indices for every sample.
+	           cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 10, 1.0),
+	           3,   // Number of times the algorithm executed with different init labels.
+	           cv::KMEANS_PP_CENTERS);
+	#else
 	cv::Mat centers;
 	cv::kmeans(lab_img,  // Sample array, 1 row per sample.
 	           n_levels, // Number of clusters to split the set by.
@@ -136,26 +162,19 @@ static void Quantized2Level(const cv::Mat &cropped_img, const int n_levels,
 	           cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 10, 1.0),
 	           3,   // Number of times the algorithm executed with different init labels.
 	           cv::KMEANS_PP_CENTERS,
-	           centers); // Centers of the clusters.
-
-	#ifdef DEBUG
+	           centers);
 	std::cerr << "centers = " << std::endl << " " << centers << std::endl << std::endl;
 	#endif
 
 	// Fit the result, change the pixel values to centers of the clusters.
-	lab_img.convertTo(quantized_img, CV_8UC3);
-	cv::MatIterator_<cv::Vec3f> center = centers.begin<cv::Vec3f>();
-	cv::MatIterator_<cv::Vec3b> pixel = quantized_img.begin<cv::Vec3b>();
-	cv::MatIterator_<cv::Vec3b> pixel_end = quantized_img.end<cv::Vec3b>();
+	quantized_img = cv::Mat(lab_img.size(), CV_8UC1);
+	cv::MatIterator_<uchar> pixel = quantized_img.begin<uchar>();
+	cv::MatIterator_<uchar> pixel_end = quantized_img.end<uchar>();
 	for(int i = 0; pixel != pixel_end; i++, ++pixel) {
-		int cluster_index = indices(1,i);
-		for(int j = 0; j < cropped_img.channels(); j++)
-			(*pixel)[j] = color_table[cluster_index][j];
-		/*
-		   cv::Vec3f new_pixel = center[indices(1,i)];
-		   for(int j = 0; j < cropped_img.channels(); j++)
-		   (*pixel)[j] = cv::saturate_cast<uchar>(new_pixel[j]);
-		 */
+		// Offset the levels by 1 to avoid divide-by-0.
+		int cluster_index = (levels_of_signal+1) - indices(1,i);
+		// Evenly distributed in the gray scale.
+		*pixel = 255 / cluster_index;
 	}
 
 	// Reshape back to the target image size (M, N, n-channels).
@@ -169,6 +188,16 @@ static void Quantized2Level(const cv::Mat &cropped_img, const int n_levels,
 }
 
 // Step 3
+static void IdentifyPosition(const cv::Mat &quantized_signal, const int threshold,
+                             std::vector<int> &measure_pos) {
+	// Extract the central line.
+	int center_col = (quantized_signal.size().width - 1)/2 + 1;
+	cv::Mat signal_profile = quantized_signal.col(center_col);
+
+	// cv::Scharr( src_gray, grad_x, ddepth, 1, 0, scale, delta, BORDER_DEFAULT );
+}
+
+// Step 4
 static void ExtractSignal(const cv::Mat &quantized_img,
                           std::vector<int> &labeled_signal) {
 }
@@ -193,6 +222,9 @@ int main(int argc, char **argv) {
 
 	cv::Mat quantized_signal; // Color quantized signal.
 	Quantized2Level(raw_signal, levels_of_signal, quantized_signal);
+
+	std::vector<int> measure_pos; // Locations to perform the measurement.
+	IdentifyPosition(quantized_signal, valid_signal_threshold, measure_pos);
 
 	// Wait for key press.
 	cv::waitKey(0);
