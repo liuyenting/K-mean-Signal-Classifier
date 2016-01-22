@@ -194,11 +194,16 @@ static void IdentifyPosition(const cv::Mat &quantized_signal, const int threshol
 	int center_col = (quantized_signal.size().width - 1)/2 + 1;
 	cv::Mat signal_profile = quantized_signal.col(center_col);
 
-	// cv::Scharr( src_gray, grad_x, ddepth, 1, 0, scale, delta, BORDER_DEFAULT );
+	// Calculate the absolute gradient on Y direction only.
+	cv::Scharr(signal_profile, signal_profile, CV_16S, 0, 1);
+	// cv::Sobel(signal_profile, signal_profile, CV_16S, 0, 1, 3); // Using kernel size = 3.
+	cv::convertScaleAbs(signal_profile, signal_profile);
+
+	// Find out the peaks that are over the threshold.
 }
 
 // Step 4
-static void ExtractSignal(const cv::Mat &quantized_img,
+static void ExtractSignal(const cv::Mat &quantized_signal, const std::vector<int> pos,
                           std::vector<int> &labeled_signal) {
 }
 
