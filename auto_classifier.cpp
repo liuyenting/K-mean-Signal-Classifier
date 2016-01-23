@@ -14,16 +14,15 @@ const int roi_to_edge = 10;             // Blank region between ROI and the edge
 const int extract_width = 20; // Strip width during the signal extraction.
 
 const int levels_of_signal = 5;
-const cv::Scalar color_table[] =
-{
-	cv::Scalar(0, 0, 255),
-	cv::Scalar(0,255,0),
-	cv::Scalar(255,100,100),
-	cv::Scalar(255,0,255),
-	cv::Scalar(0,255,255)
-};
 
 const int valid_signal_duration_threshold = 10;  // Peak-to-Peak shall separate N pixels.
+
+#ifdef SHOW_PREVIEW
+const std::string preview_window_title = "Preview";
+cv::Mat preview;
+
+cv::Point sample_start, sample_end;
+#endif
 
 static cv::Point GetCenter(const std::vector<cv::Vec3f> &source, int index) {
 	return cv::Point(std::round(source[index][0]), std::round(source[index][1]));
@@ -80,39 +79,36 @@ static void Crop2Source(const cv::Mat &original_img,
 	cropped_img = cropped_img(roi);
 	center = delta;            // Remove the offset, since the image is cropped.
 
-	#ifdef SHOW_PREVIEW
-	// Generate preview of the result.
-	cv::Mat preview_img;
-	preview_img = cropped_img.clone();
-
-	// Circle the light source.
-	cv::circle(preview_img, center, max_radius,
-	           cv::Scalar(0, 0, 255),  // Color of the circle outline.
-	           1);                     // Thickenss.
-
-	// Draw the diameter.
-	cv::Point y_delta = cv::Point(0, max_radius);
-	cv::line(preview_img,
-	         center - y_delta,
-	         center + y_delta,
-	         cv::Scalar(255, 0, 0),    // Color of the extracted location.
-	         1);                       // Thickness.
-	#endif
-
 	// Retrieve the signal, located at the diameter.
 	// signal = cropped_img.col(center.x).rowRange(center.y - max_radius,
 	//                                            center.y + max_radius);
 	signal = cropped_img.colRange(center.x - extract_width,
 	                              center.x + extract_width).rowRange(center.y - max_radius,
 	                                                                 center.y + max_radius);
+
 	#ifdef SHOW_PREVIEW
 	// Color histogram of the extracted signal.
 	#endif
 
 	#ifdef SHOW_PREVIEW
-	const std::string window_title = "Cropped Image";
-	cv::namedWindow(window_title, cv::WINDOW_AUTOSIZE);
-	cv::imshow(window_title, preview_img);
+	preview = cropped_img.clone();
+
+	// Circle the light source.
+	cv::circle(preview, center, max_radius,
+	           cv::Scalar(0, 0, 255),  // Color of the circle outline.
+	           1);                     // Thickenss.
+
+	// Draw the diameter.
+	cv::Point y_delta = cv::Point(0, max_radius);
+	sample_start = center - y_delta;
+	sample_end = center + y_delta;
+	cv::line(preview,
+	         sample_start,
+	         sample_end,
+	         cv::Scalar(255, 0, 0),    // Color of the extracted location.
+	         1);                       // Thickness.
+
+	cv::imshow(preview_window_title, preview);
 	#endif
 }
 
@@ -147,14 +143,6 @@ static void Quantized2Level(const cv::Mat &cropped_img, const int n_levels,
 
 	// Apply K-mean.
 	cv::Mat_<int> indices(lab_img.size(), CV_32SC1);
-	#ifndef DEBUG
-	cv::kmeans(lab_img,  // Sample array, 1 row per sample.
-	           n_levels, // Number of clusters to split the set by.
-	           indices,  // Integer artray that stores the cluster indices for every sample.
-	           cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 10, 1.0),
-	           3,   // Number of times the algorithm executed with different init labels.
-	           cv::KMEANS_PP_CENTERS);
-	#else
 	cv::Mat centers;
 	cv::kmeans(lab_img,  // Sample array, 1 row per sample.
 	           n_levels, // Number of clusters to split the set by.
@@ -164,6 +152,21 @@ static void Quantized2Level(const cv::Mat &cropped_img, const int n_levels,
 	           cv::KMEANS_PP_CENTERS,
 	           centers);
 	std::cerr << "centers = " << std::endl << " " << centers << std::endl << std::endl;
+
+	// Recalculate the indices.
+	cv::Mat level_lookup;
+	// Weight the centroids by RGB and sum to a single column.
+	cv::Mat weighted_centers = centers.clone();
+	cv::Scalar weight(0, 256, 512);
+	int n_rows = weighted_centers.size().height;
+	for(int i = 0; i < n_rows; i++)
+		weighted_centers.row(i) += weight;
+	cv::reduce(weighted_centers, weighted_centers, 1, CV_REDUCE_SUM);
+
+	// Get the sorted index as the lookup table.
+	cv::sortIdx(weighted_centers, level_lookup, cv::SORT_EVERY_COLUMN | cv::SORT_DESCENDING);
+	#ifdef DEBUG
+	std::cerr << "remap = " << std::endl << " " << level_lookup << std::endl << std::endl;
 	#endif
 
 	// Fit the result, change the pixel values to centers of the clusters.
@@ -172,24 +175,31 @@ static void Quantized2Level(const cv::Mat &cropped_img, const int n_levels,
 	cv::MatIterator_<uchar> pixel_end = quantized_img.end<uchar>();
 	for(int i = 0; pixel != pixel_end; i++, ++pixel) {
 		// Offset the levels by 1 to avoid divide-by-0.
-		int cluster_index = (levels_of_signal+1) - indices(1,i);
+		int cluster_index = (levels_of_signal+1) - indices(i);
 		// Evenly distributed in the gray scale.
+		// *pixel = cv::saturate_cast<uchar>(level_lookup.at<int>(indices(i))); // 255 / cluster_index;
 		*pixel = 255 / cluster_index;
 	}
 
 	// Reshape back to the target image size (M, N, n-channels).
 	quantized_img = quantized_img.reshape(0, img_size.height);
 
-	// Average the rows to acquire a single line.
-	cv::reduce(quantized_img, quantized_img,
-	           1,                    // Reduce to a single column.
-	           CV_REDUCE_AVG);
-
 	#ifdef SHOW_PREVIEW
-	const std::string window_title = "Quantized Signal";
-	cv::namedWindow(window_title, cv::WINDOW_AUTOSIZE);
-	cv::imshow(window_title, quantized_img);
+	// Convert the quantized result from gray scale to RGB.
+	cv::Mat colored;
+	cv::cvtColor(quantized_img, colored, CV_GRAY2BGR);
+
+	// Select the region for duplicate.
+	cv::Point x_delta(extract_width, 0);
+	cv::Mat region_to_replace = preview(cv::Rect(sample_start - x_delta,
+	                                             sample_end + x_delta));
+	colored.copyTo(region_to_replace);
+
+	cv::imshow(preview_window_title, preview);
 	#endif
+
+	// Average the cols to acquire a single row.
+	cv::reduce(quantized_img, quantized_img, 1, CV_REDUCE_AVG);
 }
 
 // Step 3
@@ -204,53 +214,40 @@ static void IdentifyPosition(const cv::Mat &quantized_signal, const int threshol
 	int n_rows = quantized_signal.size().height;
 	uchar tmp_val = 255, curr_val;
 	for(int i = 0, distance = 0; i < n_rows; i++, distance++) {
-		curr_val = quantized_signal.at<uchar>(i,1);
+		curr_val = quantized_signal.at<uchar>(i);
 
 		#ifdef DEBUG
 		std::cerr << "prev value = " << (int)tmp_val << std::endl;
 		std::cerr << "curr value = " << (int)curr_val << std::endl;
-		std::cerr << "distance   = " << distance << std::endl;
+		std::cerr << "distance   = " << distance << std::endl << std::endl;
 		#endif
 
 		if(curr_val != tmp_val) {
 			tmp_val = curr_val;
-			if(distance > threshold) {
-				std::cerr << "...different" << std::endl;
-			} else {
+			if(distance <= threshold) {
 				if(!measure_pos.empty())
 					measure_pos.pop_back();
 			}
+
 			distance = 0;
 			measure_pos.push_back(i);
 		}
 	}
-
-	#ifdef SHOW_PREVIEW
-	cv::Mat preview;
-
-	// Extend the column to visible size.
-	cv::repeat(quantized_signal, 1,
-	           2*extract_width + 1,
-	           preview);
-
-	// Dump the vector back to the profile matrix.
-	int x_pos = extract_width + 1, y_pos;
-	for(unsigned int i = 1; i < measure_pos.size(); i++) {
-		y_pos = (measure_pos[i-1] + measure_pos[i]) / 2;
-		cv::circle(preview,
-		           cv::Point(x_pos, y_pos),
-		           2, cv::Scalar(255), -1);
-	}
-
-	cv::namedWindow("Scharr Result", cv::WINDOW_AUTOSIZE);
-	cv::imshow("Scharr Result", preview);
-	#endif
 }
 
 // Step 4
 static void ExtractSignal(const cv::Mat &quantized_signal, const std::vector<int> pos,
-                          std::vector<int> &labeled_signal) {
+                          std::vector<int> &extract_result) {
+	for(unsigned int i = 0; i < pos.size(); i++) {
+		extract_result.push_back(quantized_signal.at<uchar>(pos[i]));
+	}
 
+	#ifdef DEBUG
+	std::cerr << "result = " << std::endl << " [ ";
+	for(unsigned int i = 0; i < extract_result.size(); i++)
+		std::cerr << extract_result[i] << " ";
+	std::cerr << "]" << std::endl;
+	#endif
 }
 
 int main(int argc, char **argv) {
@@ -267,6 +264,10 @@ int main(int argc, char **argv) {
 		return -1;
 	}
 
+	#ifdef SHOW_PREVIEW
+	cv::namedWindow(preview_window_title, cv::WINDOW_AUTOSIZE);
+	#endif
+
 	cv::Mat cropped_img; // Cropped to the targeted light source.
 	cv::Mat raw_signal;   // The desired signal pattern extracted from the diameter.
 	Crop2Source(original_img, cropped_img, raw_signal);
@@ -276,6 +277,9 @@ int main(int argc, char **argv) {
 
 	std::vector<int> measure_pos; // Locations to perform the measurement.
 	IdentifyPosition(quantized_signal, valid_signal_duration_threshold, measure_pos);
+
+	std::vector<int> result;
+	ExtractSignal(quantized_signal, measure_pos, result);
 
 	#ifdef SHOW_PREVIEW
 	// Wait for key press.
