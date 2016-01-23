@@ -5,7 +5,7 @@
 #include <opencv2/imgproc/imgproc.hpp>
 
 #define SHOW_PREVIEW
-// #define DEBUG
+#define DEBUG
 
 const int canny_threshold = 15;
 const int accumulator_threshold = 60;
@@ -203,10 +203,14 @@ static void Quantized2Level(const cv::Mat &cropped_img, const int n_levels,
 }
 
 // Step 3
-static void IdentifyPosition(const cv::Mat &quantized_signal, const int threshold,
-                             std::vector<int> &measure_pos) {
+static void ExtractSignal(const cv::Mat &quantized_signal, const int threshold,
+                          std::vector<int> &extracted_result) {
 	// Wipe the vector.
-	measure_pos.clear();
+	extracted_result.clear();
+
+	#ifdef SHOW_PREVIEW
+	std::vector<int> measure_pos;
+	#endif
 
 	// Find all the local maxima.
 	// Since the data is quantized, only the difference is required,
@@ -225,28 +229,26 @@ static void IdentifyPosition(const cv::Mat &quantized_signal, const int threshol
 		if(curr_val != tmp_val) {
 			tmp_val = curr_val;
 			if(distance <= threshold) {
-				if(!measure_pos.empty())
+				if(!extracted_result.empty()) {
+					extracted_result.pop_back();
+					#ifdef SHOW_PREVIEW
 					measure_pos.pop_back();
+					#endif
+				}
 			}
 
 			distance = 0;
+			extracted_result.push_back((int)curr_val);
+			#ifdef SHOW_PREVIEW
 			measure_pos.push_back(i);
+			#endif
 		}
 	}
-}
 
-// Step 4
-static void ExtractSignal(const cv::Mat &quantized_signal, const std::vector<int> pos,
-                          std::vector<int> &extract_result) {
-	for(unsigned int i = 0; i < pos.size(); i++) {
-		extract_result.push_back(quantized_signal.at<uchar>(pos[i]));
-	}
-
-	#ifdef DEBUG
-	std::cerr << "result = " << std::endl << " [ ";
-	for(unsigned int i = 0; i < extract_result.size(); i++)
-		std::cerr << extract_result[i] << " ";
-	std::cerr << "]" << std::endl;
+	#ifdef SHOW_PREVIEW
+	for(unsigned int i = 0; i < measure_pos.size(); i++)
+		cv::circle(preview, cv::Point(sample_start.x, measure_pos[i]), 1, cv::Scalar(255,255,255), -1);
+	cv::imshow(preview_window_title, preview);
 	#endif
 }
 
@@ -275,11 +277,13 @@ int main(int argc, char **argv) {
 	cv::Mat quantized_signal; // Color quantized signal.
 	Quantized2Level(raw_signal, levels_of_signal, quantized_signal);
 
-	std::vector<int> measure_pos; // Locations to perform the measurement.
-	IdentifyPosition(quantized_signal, valid_signal_duration_threshold, measure_pos);
-
 	std::vector<int> result;
-	ExtractSignal(quantized_signal, measure_pos, result);
+	ExtractSignal(quantized_signal, valid_signal_duration_threshold, result);
+
+	std::cout << "result = " << std::endl << " [ ";
+	for(unsigned int i = 0; i < result.size(); i++)
+		std::cout << result[i] << " ";
+	std::cout << "]" << std::endl;
 
 	#ifdef SHOW_PREVIEW
 	// Wait for key press.
