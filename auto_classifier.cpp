@@ -5,7 +5,7 @@
 #include <opencv2/imgproc/imgproc.hpp>
 
 #define SHOW_PREVIEW
-#define DEBUG
+// #define DEBUG
 
 const int canny_threshold = 15;
 const int accumulator_threshold = 60;
@@ -23,7 +23,7 @@ const cv::Scalar color_table[] =
 	cv::Scalar(0,255,255)
 };
 
-const int valid_signal_threshold = 10;
+const int valid_signal_duration_threshold = 10;  // Peak-to-Peak shall separate N pixels.
 
 static cv::Point GetCenter(const std::vector<cv::Vec3f> &source, int index) {
 	return cv::Point(std::round(source[index][0]), std::round(source[index][1]));
@@ -180,6 +180,11 @@ static void Quantized2Level(const cv::Mat &cropped_img, const int n_levels,
 	// Reshape back to the target image size (M, N, n-channels).
 	quantized_img = quantized_img.reshape(0, img_size.height);
 
+	// Average the rows to acquire a single line.
+	cv::reduce(quantized_img, quantized_img,
+	           1,                    // Reduce to a single column.
+	           CV_REDUCE_AVG);
+
 	#ifdef SHOW_PREVIEW
 	const std::string window_title = "Quantized Signal";
 	cv::namedWindow(window_title, cv::WINDOW_AUTOSIZE);
@@ -190,16 +195,56 @@ static void Quantized2Level(const cv::Mat &cropped_img, const int n_levels,
 // Step 3
 static void IdentifyPosition(const cv::Mat &quantized_signal, const int threshold,
                              std::vector<int> &measure_pos) {
-	// Extract the central line.
-	int center_col = (quantized_signal.size().width - 1)/2 + 1;
-	cv::Mat signal_profile = quantized_signal.col(center_col);
+	// Wipe the vector.
+	measure_pos.clear();
 
-	// Calculate the absolute gradient on Y direction only.
-	cv::Scharr(signal_profile, signal_profile, CV_16S, 0, 1);
-	// cv::Sobel(signal_profile, signal_profile, CV_16S, 0, 1, 3); // Using kernel size = 3.
-	cv::convertScaleAbs(signal_profile, signal_profile);
+	// Find all the local maxima.
+	// Since the data is quantized, only the difference is required,
+	//  and ignore all the signals that are too close to each other.
+	int n_rows = quantized_signal.size().height;
+	uchar tmp_val = 255, curr_val;
+	for(int i = 0, distance = 0; i < n_rows; i++, distance++) {
+		curr_val = quantized_signal.at<uchar>(i,1);
 
-	// Find out the peaks that are over the threshold.
+		#ifdef DEBUG
+		std::cerr << "prev value = " << (int)tmp_val << std::endl;
+		std::cerr << "curr value = " << (int)curr_val << std::endl;
+		std::cerr << "distance   = " << distance << std::endl;
+		#endif
+
+		if(curr_val != tmp_val) {
+			tmp_val = curr_val;
+			if(distance > threshold) {
+				std::cerr << "...different" << std::endl;
+			} else {
+				if(!measure_pos.empty())
+					measure_pos.pop_back();
+			}
+			distance = 0;
+			measure_pos.push_back(i);
+		}
+	}
+
+	#ifdef SHOW_PREVIEW
+	cv::Mat preview;
+
+	// Extend the column to visible size.
+	cv::repeat(quantized_signal, 1,
+	           2*extract_width + 1,
+	           preview);
+
+	// Dump the vector back to the profile matrix.
+	int x_pos = extract_width + 1, y_pos;
+	for(unsigned int i = 1; i < measure_pos.size(); i++) {
+		y_pos = (measure_pos[i-1] + measure_pos[i]) / 2;
+		cv::circle(preview,
+		           cv::Point(x_pos, y_pos),
+		           2, cv::Scalar(255), -1);
+	}
+
+	cv::namedWindow("Scharr Result", cv::WINDOW_AUTOSIZE);
+	cv::imshow("Scharr Result", preview);
+	#endif
 }
 
 // Step 4
@@ -230,13 +275,15 @@ int main(int argc, char **argv) {
 	Quantized2Level(raw_signal, levels_of_signal, quantized_signal);
 
 	std::vector<int> measure_pos; // Locations to perform the measurement.
-	IdentifyPosition(quantized_signal, valid_signal_threshold, measure_pos);
+	IdentifyPosition(quantized_signal, valid_signal_duration_threshold, measure_pos);
 
+	#ifdef SHOW_PREVIEW
 	// Wait for key press.
 	cv::waitKey(0);
 
 	// Close all the opened windows.
 	cv::destroyAllWindows();
+	#endif
 
 	return 0;
 }
